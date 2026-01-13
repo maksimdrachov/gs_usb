@@ -1,13 +1,19 @@
-from struct import *
 import platform
+from typing import List, Optional
 
-from usb.backend import libusb1
 import usb.core
 import usb.util
+from usb.backend import libusb1
 
-from .gs_usb_structures import *
-from .gs_usb_frame import *
-from .constants import *
+from .constants import (
+    GS_CAN_MODE_HW_TIMESTAMP,
+    GS_CAN_MODE_LISTEN_ONLY,
+    GS_CAN_MODE_LOOP_BACK,
+    GS_CAN_MODE_NORMAL,
+    GS_CAN_MODE_ONE_SHOT,
+)
+from .gs_usb_frame import GsUsbFrame
+from .gs_usb_structures import DeviceBitTiming, DeviceCapability, DeviceInfo, DeviceMode
 
 # gs_usb VIDs/PIDs (devices currently in the linux kernel driver)
 GS_USB_ID_VENDOR = 0x1D50
@@ -22,7 +28,7 @@ GS_USB_CES_CANEXT_FD_PRODUCT_ID = 0x606F
 GS_USB_ABE_CANDEBUGGER_FD_VENDOR_ID = 0x16D0
 GS_USB_ABE_CANDEBUGGER_FD_PRODUCT_ID = 0x10B8
 
-#gs_usb mode
+# gs_usb mode
 GS_CAN_MODE_RESET = 0
 GS_CAN_MODE_START = 1
 
@@ -38,8 +44,8 @@ _GS_USB_BREQ_DEVICE_CONFIG = 5
 class GsUsb:
     def __init__(self, gs_usb):
         self.gs_usb = gs_usb
-        self.capability = None
-        self.device_flags = None
+        self.capability: Optional[DeviceCapability] = None
+        self.device_flags: int = 0
 
     def start(self, flags=(GS_CAN_MODE_NORMAL | GS_CAN_MODE_HW_TIMESTAMP)):
         r"""
@@ -50,16 +56,22 @@ class GsUsb:
         self.gs_usb.reset()
 
         # Detach usb from kernel driver in Linux/Unix system to perform IO
-        if "windows" not in platform.system().lower() and self.gs_usb.is_kernel_driver_active(
-            0
+        if (
+            "windows" not in platform.system().lower()
+            and self.gs_usb.is_kernel_driver_active(0)
         ):
             self.gs_usb.detach_kernel_driver(0)
 
-        #Only allow features that the device supports
+        # Only allow features that the device supports
         flags &= self.device_capability.feature
 
         # Only allow features that this driver supports
-        flags &= GS_CAN_MODE_LISTEN_ONLY | GS_CAN_MODE_LOOP_BACK | GS_CAN_MODE_ONE_SHOT | GS_CAN_MODE_HW_TIMESTAMP
+        flags &= (
+            GS_CAN_MODE_LISTEN_ONLY
+            | GS_CAN_MODE_LOOP_BACK
+            | GS_CAN_MODE_ONE_SHOT
+            | GS_CAN_MODE_HW_TIMESTAMP
+        )
         self.device_flags = flags
 
         mode = DeviceMode(GS_CAN_MODE_START, flags)
@@ -75,7 +87,6 @@ class GsUsb:
         except usb.core.USBError:
             pass
 
-
     def set_bitrate(self, bitrate, sample_point=87.5):
         r"""
         Set bitrate with sample point 87.5% and clock rate 48MHz.
@@ -86,7 +97,7 @@ class GsUsb:
         prop_seg = 1
         sjw = 1
 
-        if ((self.device_capability.fclk_can == 48000000) and (sample_point == 87.5)):
+        if (self.device_capability.fclk_can == 48000000) and (sample_point == 87.5):
             if bitrate == 10000:
                 self.set_timing(prop_seg, 12, 2, sjw, 300)
             elif bitrate == 20000:
@@ -110,7 +121,7 @@ class GsUsb:
             else:
                 return False
             return True
-        elif ((self.device_capability.fclk_can == 80000000) and (sample_point == 87.5)):
+        elif (self.device_capability.fclk_can == 80000000) and (sample_point == 87.5):
             if bitrate == 10000:
                 self.set_timing(prop_seg, 12, 2, sjw, 500)
             elif bitrate == 20000:
@@ -126,7 +137,7 @@ class GsUsb:
             elif bitrate == 250000:
                 self.set_timing(prop_seg, 12, 2, sjw, 20)
             elif bitrate == 500000:
-              self.set_timing(prop_seg, 12, 2, sjw, 10)
+                self.set_timing(prop_seg, 12, 2, sjw, 10)
             elif bitrate == 800000:
                 self.set_timing(prop_seg, 7, 1, sjw, 10)
             elif bitrate == 1000000:
@@ -134,8 +145,38 @@ class GsUsb:
             else:
                 return False
             return True
+        elif (self.device_capability.fclk_can == 40000000) and (sample_point == 87.5):
+            # CF3 / TCAN4550 uses 40MHz clock
+            # Total TQ = 16 (1 sync + 1 prop + 12 phase1 + 2 phase2) for 87.5% sample point
+            # brp = 40000000 / (bitrate * 16)
+            if bitrate == 10000:
+                self.set_timing(prop_seg, 12, 2, sjw, 250)
+            elif bitrate == 20000:
+                self.set_timing(prop_seg, 12, 2, sjw, 125)
+            elif bitrate == 50000:
+                self.set_timing(prop_seg, 12, 2, sjw, 50)
+            elif bitrate == 83333:
+                self.set_timing(prop_seg, 12, 2, sjw, 30)
+            elif bitrate == 100000:
+                self.set_timing(prop_seg, 12, 2, sjw, 25)
+            elif bitrate == 125000:
+                self.set_timing(prop_seg, 12, 2, sjw, 20)
+            elif bitrate == 250000:
+                self.set_timing(prop_seg, 12, 2, sjw, 10)
+            elif bitrate == 500000:
+                self.set_timing(prop_seg, 12, 2, sjw, 5)
+            elif bitrate == 800000:
+                # 800k doesn't divide evenly into 16 TQ, use 10 TQ (90% sample point)
+                self.set_timing(prop_seg, 7, 1, sjw, 5)
+            elif bitrate == 1000000:
+                # 1M uses 8 TQ (87.5% sample point): 1+1+5+1=8, sample=(1+1+5)/8=87.5%
+                self.set_timing(prop_seg, 5, 1, sjw, 5)
+            else:
+                return False
+            return True
+
         else:
-            #device clk or sample point currently unsupported
+            # device clk or sample point currently unsupported
             return False
 
     def set_timing(self, prop_seg, phase_seg1, phase_seg2, sjw, brp):
@@ -155,8 +196,10 @@ class GsUsb:
         Send frame
         :param frame: GsUsbFrame
         """
-        #Frame size is different depending on HW timestamp feature support
-        hw_timestamps = ((self.device_flags & GS_CAN_MODE_HW_TIMESTAMP) == GS_CAN_MODE_HW_TIMESTAMP)
+        # Frame size is different depending on HW timestamp feature support
+        hw_timestamps = (
+            self.device_flags & GS_CAN_MODE_HW_TIMESTAMP
+        ) == GS_CAN_MODE_HW_TIMESTAMP
         self.gs_usb.write(0x02, frame.pack(hw_timestamps))
         return True
 
@@ -168,8 +211,10 @@ class GsUsb:
                            Note that timeout as 0 will block forever if no message is received
         :return: return True if success else False
         """
-        #Frame size is different depending on HW timestamp feature support
-        hw_timestamps = ((self.device_flags & GS_CAN_MODE_HW_TIMESTAMP) == GS_CAN_MODE_HW_TIMESTAMP)
+        # Frame size is different depending on HW timestamp feature support
+        hw_timestamps = (
+            self.device_flags & GS_CAN_MODE_HW_TIMESTAMP
+        ) == GS_CAN_MODE_HW_TIMESTAMP
         try:
             data = self.gs_usb.read(0x81, frame.__sizeof__(hw_timestamps), timeout_ms)
         except usb.core.USBError:
@@ -206,7 +251,7 @@ class GsUsb:
         r"""
         Get gs_usb device capability
         """
-        if self.capability == None:
+        if self.capability is None:
             data = self.gs_usb.ctrl_transfer(0xC1, _GS_USB_BREQ_BT_CONST, 0, 0, 40)
             self.capability = DeviceCapability.unpack(data)
         return self.capability
@@ -218,25 +263,38 @@ class GsUsb:
             return ""
         return _
 
-    is_gs_usb_device = staticmethod(lambda dev : (dev.idVendor == GS_USB_ID_VENDOR and dev.idProduct == GS_USB_ID_PRODUCT)\
-            or (dev.idVendor == GS_USB_CANDLELIGHT_VENDOR_ID and dev.idProduct == GS_USB_CANDLELIGHT_PRODUCT_ID) \
-            or (dev.idVendor == GS_USB_CES_CANEXT_FD_VENDOR_ID and dev.idProduct == GS_USB_CES_CANEXT_FD_PRODUCT_ID) \
-            or (dev.idVendor == GS_USB_ABE_CANDEBUGGER_FD_VENDOR_ID and dev.idProduct == GS_USB_ABE_CANDEBUGGER_FD_PRODUCT_ID)) \
+    is_gs_usb_device = staticmethod(
+        lambda dev: (
+            dev.idVendor == GS_USB_ID_VENDOR and dev.idProduct == GS_USB_ID_PRODUCT
+        )
+        or (
+            dev.idVendor == GS_USB_CANDLELIGHT_VENDOR_ID
+            and dev.idProduct == GS_USB_CANDLELIGHT_PRODUCT_ID
+        )
+        or (
+            dev.idVendor == GS_USB_CES_CANEXT_FD_VENDOR_ID
+            and dev.idProduct == GS_USB_CES_CANEXT_FD_PRODUCT_ID
+        )
+        or (
+            dev.idVendor == GS_USB_ABE_CANDEBUGGER_FD_VENDOR_ID
+            and dev.idProduct == GS_USB_ABE_CANDEBUGGER_FD_PRODUCT_ID
+        )
+    )
 
     @classmethod
-    def scan(cls):
+    def scan(cls) -> List["GsUsb"]:
         r"""
         Retrieve the list of gs_usb devices handle
         :return: list of gs_usb devices handle
         """
-        return [
-            GsUsb(dev)
-            for dev in usb.core.find(
-                find_all=True,
-                custom_match = cls.is_gs_usb_device,
-                backend=libusb1.get_backend(),
-            )
-        ]
+        devices = usb.core.find(
+            find_all=True,
+            custom_match=cls.is_gs_usb_device,
+            backend=libusb1.get_backend(),
+        )
+        if devices is None:
+            return []
+        return [GsUsb(dev) for dev in devices]
 
     @classmethod
     def find(cls, bus, address):
@@ -245,7 +303,7 @@ class GsUsb:
         :return: The gs_usb device handle if found, else None
         """
         gs_usb = usb.core.find(
-            custom_match = cls.is_gs_usb_device,
+            custom_match=cls.is_gs_usb_device,
             bus=bus,
             address=address,
             backend=libusb1.get_backend(),
