@@ -19,8 +19,9 @@ import usb.core
 
 from gs_usb.constants import (
     GS_CAN_MODE_FD,
-    GS_CAN_MODE_HW_TIMESTAMP,
+    GS_CAN_MODE_LOOP_BACK,
     GS_CAN_MODE_NORMAL,
+    GS_CAN_MODE_ONE_SHOT,
 )
 from gs_usb.gs_usb import GsUsb
 from gs_usb.gs_usb_frame import GsUsbFrame
@@ -83,10 +84,15 @@ def main():
 
     # Step 3: Start channel with FD mode enabled
     print("=== Step 3: MODE (Start Channel) ===")
-    flags = GS_CAN_MODE_NORMAL | GS_CAN_MODE_HW_TIMESTAMP | GS_CAN_MODE_FD
+    flags = (
+        GS_CAN_MODE_NORMAL
+        | GS_CAN_MODE_FD
+        | GS_CAN_MODE_ONE_SHOT
+        | GS_CAN_MODE_LOOP_BACK
+    )
     print(f"Starting channel with flags: 0x{flags:04x}")
     print("  - GS_CAN_MODE_NORMAL")
-    print("  - GS_CAN_MODE_HW_TIMESTAMP")
+    print("  - GS_CAN_MODE_ONE_SHOT")
     print("  - GS_CAN_MODE_FD")
     dev.start(flags)
     print("Channel started successfully!")
@@ -105,8 +111,8 @@ def main():
 
     # Demonstrate sending a CAN FD frame
     print("=== Sending Test CAN FD Frame ===")
-    # Create a CAN FD frame with 24 bytes of data (requires FD mode)
-    test_data = bytes(range(24))  # 0x00, 0x01, ..., 0x17
+    # Create a CAN FD frame with 64 bytes of data (requires FD mode)
+    test_data = bytes(range(64))  # 0x00, 0x01, ..., 0x17
     fd_frame = GsUsbFrame(can_id=0x123, data=test_data, fd=True, brs=True)
     print(f"TX  {fd_frame}")
 
@@ -125,14 +131,23 @@ def main():
 
     end_time = time.time() + 5
     frame_count = 0
+    echo_count = 0
+    rx_count = 0
     while time.time() < end_time:
         iframe = GsUsbFrame()
         if dev.read(iframe, 100):  # 100ms timeout
-            print(f"RX  {iframe}")
             frame_count += 1
+            if iframe.is_echo_frame:
+                # Echo frame = TX confirmation from device (our transmitted frame)
+                echo_count += 1
+                print(f"ECHO  {iframe}")
+            else:
+                # RX frame = frame received from CAN bus
+                rx_count += 1
+                print(f"RX    {iframe}")
 
     print()
-    print(f"Received {frame_count} frames")
+    print(f"Total frames: {frame_count} (echo: {echo_count}, rx: {rx_count})")
     print()
 
     # Stop the device

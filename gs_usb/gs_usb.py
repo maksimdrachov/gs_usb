@@ -8,6 +8,7 @@ from usb.backend import libusb1
 from .constants import (
     GS_CAN_FEATURE_BT_CONST_EXT,
     GS_CAN_FEATURE_FD,
+    GS_CAN_FLAG_FD,
     GS_CAN_MODE_FD,
     GS_CAN_MODE_HW_TIMESTAMP,
     GS_CAN_MODE_LISTEN_ONLY,
@@ -274,6 +275,9 @@ class GsUsb:
             elif bitrate == 8000000:
                 # 40MHz / 8Mbps = 5 TQ, use 5 TQ: 1+1+2+1=5, sample=80%
                 self.set_data_timing(prop_seg, 2, 1, sjw, 1)
+            elif bitrate == 10000000:
+                # 40MHz / 10Mbps = 4 TQ, use 4 TQ: 1+1+1+1=4, sample=75%
+                self.set_data_timing(prop_seg, 1, 1, sjw, 1)
             else:
                 return False
             return True
@@ -301,18 +305,28 @@ class GsUsb:
                            Note that timeout as 0 will block forever if no message is received
         :return: return True if success else False
         """
-        # Frame size is different depending on HW timestamp and FD mode
         hw_timestamps = (
             self.device_flags & GS_CAN_MODE_HW_TIMESTAMP
         ) == GS_CAN_MODE_HW_TIMESTAMP
+
+        # In FD mode, we request the max frame size but may receive smaller frames
+        # (classic CAN frames are still possible, e.g., echo frames)
+        max_size = frame.__sizeof__(hw_timestamps, self.fd_mode)
+
         try:
-            data = self.gs_usb.read(
-                0x81, frame.__sizeof__(hw_timestamps, self.fd_mode), timeout_ms
-            )
+            data = self.gs_usb.read(0x81, max_size, timeout_ms)
         except usb.core.USBError:
             return False
 
-        GsUsbFrame.unpack_into(frame, data, hw_timestamps, self.fd_mode)
+        # Determine if this is an FD frame by checking the flags byte (offset 10)
+        # or by the received data length
+        if len(data) >= 11:
+            frame_flags = data[10]
+            is_fd_frame = bool(frame_flags & GS_CAN_FLAG_FD)
+        else:
+            is_fd_frame = False
+
+        GsUsbFrame.unpack_into(frame, data, hw_timestamps, is_fd_frame)
         return True
 
     @property

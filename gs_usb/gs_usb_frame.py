@@ -13,7 +13,7 @@ from .constants import (
 
 # gs_usb general
 GS_USB_ECHO_ID = 0
-GS_USB_NONE_ECHO_ID = 0xFFFFFFFF
+GS_USB_RX_ECHO_ID = 0xFFFFFFFF  # echo_id value for received frames
 
 # Classic CAN frame sizes
 GS_USB_FRAME_SIZE = 20
@@ -106,6 +106,16 @@ class GsUsbFrame:
     @property
     def is_brs(self) -> bool:
         return bool(self.flags & GS_CAN_FLAG_BRS)
+
+    @property
+    def is_echo_frame(self) -> bool:
+        """Check if this is an echo frame (TX confirmation from device)."""
+        return self.echo_id != GS_USB_RX_ECHO_ID
+
+    @property
+    def is_rx_frame(self) -> bool:
+        """Check if this is a received frame (from CAN bus)."""
+        return self.echo_id == GS_USB_RX_ECHO_ID
 
     @property
     def timestamp(self):
