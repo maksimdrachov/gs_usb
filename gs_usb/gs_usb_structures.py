@@ -1,6 +1,8 @@
 from struct import pack, unpack
 from typing import Optional
 
+from .constants import GS_CAN_STATE_NAMES
+
 
 class DeviceMode:
     def __init__(self, mode, flags):
@@ -170,3 +172,44 @@ class DeviceCapability:
 
 # Alias for backward compatibility
 DeviceCapabilityExtended = DeviceCapability
+
+
+class DeviceState:
+    """
+    CAN device state from GS_USB_BREQ_GET_STATE response.
+
+    Contains the current CAN bus state and error counters.
+    """
+
+    def __init__(self, state: int, rxerr: int, txerr: int):
+        self.state = state
+        self.rxerr = rxerr
+        self.txerr = txerr
+
+    @property
+    def state_name(self) -> str:
+        """Get human-readable state name."""
+        return GS_CAN_STATE_NAMES.get(self.state, f"UNKNOWN({self.state})")
+
+    @property
+    def is_error_active(self) -> bool:
+        """Check if in normal operation (error active state)."""
+        return self.state == 0
+
+    @property
+    def is_bus_off(self) -> bool:
+        """Check if bus is off (TEC > 255)."""
+        return self.state == 3
+
+    def __str__(self):
+        return (
+            f"State: {self.state_name}\r\n"
+            f"RX Error Counter: {self.rxerr}\r\n"
+            f"TX Error Counter: {self.txerr}\r\n"
+        )
+
+    @staticmethod
+    def unpack(data: bytes) -> "DeviceState":
+        """Unpack from GET_STATE response (12 bytes, 3 x uint32)."""
+        state, rxerr, txerr = unpack("<3I", data)
+        return DeviceState(state, rxerr, txerr)

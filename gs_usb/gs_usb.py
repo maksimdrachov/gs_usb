@@ -8,6 +8,7 @@ from usb.backend import libusb1
 from .constants import (
     GS_CAN_FEATURE_BT_CONST_EXT,
     GS_CAN_FEATURE_FD,
+    GS_CAN_FEATURE_GET_STATE,
     GS_CAN_FLAG_FD,
     GS_CAN_MODE_FD,
     GS_CAN_MODE_HW_TIMESTAMP,
@@ -22,6 +23,7 @@ from .gs_usb_structures import (
     DeviceCapability,
     DeviceInfo,
     DeviceMode,
+    DeviceState,
 )
 
 # gs_usb VIDs/PIDs (devices currently in the linux kernel driver)
@@ -385,6 +387,26 @@ class GsUsb:
         Check if device supports CAN FD
         """
         return (self.device_capability.feature & GS_CAN_FEATURE_FD) != 0
+
+    @property
+    def supports_get_state(self):
+        r"""
+        Check if device supports GET_STATE request
+        """
+        return (self.device_capability.feature & GS_CAN_FEATURE_GET_STATE) != 0
+
+    def get_state(self, channel: int = 0) -> DeviceState:
+        r"""
+        Get CAN bus state and error counters.
+
+        :param channel: CAN channel number (default 0)
+        :return: DeviceState with state enum and error counters
+        :raises: ValueError if device doesn't support GET_STATE
+        """
+        if not self.supports_get_state:
+            raise ValueError("Device does not support GET_STATE")
+        data = self.gs_usb.ctrl_transfer(0xC1, _GS_USB_BREQ_GET_STATE, channel, 0, 12)
+        return DeviceState.unpack(data)
 
     def __str__(self):
         try:
