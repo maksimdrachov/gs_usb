@@ -6,6 +6,9 @@ import usb.util
 from usb.backend import libusb1
 
 from .constants import (
+    GS_CAN_FEATURE_BT_CONST_EXT,
+    GS_CAN_FEATURE_FD,
+    GS_CAN_MODE_FD,
     GS_CAN_MODE_HW_TIMESTAMP,
     GS_CAN_MODE_LISTEN_ONLY,
     GS_CAN_MODE_LOOP_BACK,
@@ -13,7 +16,12 @@ from .constants import (
     GS_CAN_MODE_ONE_SHOT,
 )
 from .gs_usb_frame import GsUsbFrame
-from .gs_usb_structures import DeviceBitTiming, DeviceCapability, DeviceInfo, DeviceMode
+from .gs_usb_structures import (
+    DeviceBitTiming,
+    DeviceCapability,
+    DeviceInfo,
+    DeviceMode,
+)
 
 # gs_usb VIDs/PIDs (devices currently in the linux kernel driver)
 GS_USB_ID_VENDOR = 0x1D50
@@ -55,6 +63,7 @@ class GsUsb:
         self.gs_usb = gs_usb
         self.capability: Optional[DeviceCapability] = None
         self.device_flags: int = 0
+        self.fd_mode: bool = False
 
     def start(self, flags=(GS_CAN_MODE_NORMAL | GS_CAN_MODE_HW_TIMESTAMP)):
         r"""
@@ -80,8 +89,10 @@ class GsUsb:
             | GS_CAN_MODE_LOOP_BACK
             | GS_CAN_MODE_ONE_SHOT
             | GS_CAN_MODE_HW_TIMESTAMP
+            | GS_CAN_MODE_FD
         )
         self.device_flags = flags
+        self.fd_mode = (flags & GS_CAN_MODE_FD) == GS_CAN_MODE_FD
 
         mode = DeviceMode(GS_CAN_MODE_START, flags)
         self.gs_usb.ctrl_transfer(0x41, _GS_USB_BREQ_MODE, 0, 0, mode.pack())
@@ -190,7 +201,7 @@ class GsUsb:
 
     def set_timing(self, prop_seg, phase_seg1, phase_seg2, sjw, brp):
         r"""
-        Set CAN bit timing
+        Set CAN bit timing (nominal/arbitration phase)
         :param prop_seg: propagation Segment (const 1)
         :param phase_seg1: phase segment 1 (1~15)
         :param phase_seg2: phase segment 2 (1~8)
@@ -200,16 +211,86 @@ class GsUsb:
         bit_timing = DeviceBitTiming(prop_seg, phase_seg1, phase_seg2, sjw, brp)
         self.gs_usb.ctrl_transfer(0x41, _GS_USB_BREQ_BITTIMING, 0, 0, bit_timing.pack())
 
+    def set_data_timing(self, prop_seg, phase_seg1, phase_seg2, sjw, brp):
+        r"""
+        Set CAN FD data phase bit timing
+        :param prop_seg: propagation Segment (const 1)
+        :param phase_seg1: phase segment 1
+        :param phase_seg2: phase segment 2
+        :param sjw: synchronization jump width
+        :param brp: prescaler for quantum
+        """
+        bit_timing = DeviceBitTiming(prop_seg, phase_seg1, phase_seg2, sjw, brp)
+        self.gs_usb.ctrl_transfer(
+            0x41, _GS_USB_BREQ_DATA_BITTIMING, 0, 0, bit_timing.pack()
+        )
+
+    def set_data_bitrate(self, bitrate, sample_point=75.0):
+        r"""
+        Set CAN FD data phase bitrate.
+        Common data bitrates: 2000000 (2 Mbps), 5000000 (5 Mbps), 8000000 (8 Mbps)
+
+        :param bitrate: Data phase bitrate in bps
+        :param sample_point: Sample point percentage (default 75% for high-speed data phase)
+        :return: True if successful, False if unsupported
+        """
+        # Check if device supports CAN FD
+        if not (self.device_capability.feature & GS_CAN_FEATURE_FD):
+            return False
+
+        prop_seg = 1
+        sjw = 1
+
+        # For CAN FD data phase, we typically use shorter bit times
+        # Sample point is usually 70-80% for data phase
+        if self.device_capability.fclk_can == 80000000:
+            # 80 MHz clock (common for CAN FD devices)
+            if bitrate == 2000000:
+                # 80MHz / 2Mbps = 40 TQ, use 8 TQ: 1+1+4+2=8, sample=75%
+                self.set_data_timing(prop_seg, 4, 2, sjw, 5)
+            elif bitrate == 4000000:
+                # 80MHz / 4Mbps = 20 TQ, use 4 TQ: 1+1+1+1=4, sample=75%
+                self.set_data_timing(prop_seg, 1, 1, sjw, 5)
+            elif bitrate == 5000000:
+                # 80MHz / 5Mbps = 16 TQ, use 8 TQ: 1+1+4+2=8, sample=75%
+                self.set_data_timing(prop_seg, 4, 2, sjw, 2)
+            elif bitrate == 8000000:
+                # 80MHz / 8Mbps = 10 TQ, use 5 TQ: 1+1+2+1=5, sample=80%
+                self.set_data_timing(prop_seg, 2, 1, sjw, 2)
+            else:
+                return False
+            return True
+        elif self.device_capability.fclk_can == 40000000:
+            # 40 MHz clock (TCAN4550/CF3)
+            if bitrate == 2000000:
+                # 40MHz / 2Mbps = 20 TQ, use 10 TQ: 1+1+6+2=10, sample=80%
+                self.set_data_timing(prop_seg, 6, 2, sjw, 2)
+            elif bitrate == 4000000:
+                # 40MHz / 4Mbps = 10 TQ, use 5 TQ: 1+1+2+1=5, sample=80%
+                self.set_data_timing(prop_seg, 2, 1, sjw, 2)
+            elif bitrate == 5000000:
+                # 40MHz / 5Mbps = 8 TQ, use 8 TQ: 1+1+4+2=8, sample=75%
+                self.set_data_timing(prop_seg, 4, 2, sjw, 1)
+            elif bitrate == 8000000:
+                # 40MHz / 8Mbps = 5 TQ, use 5 TQ: 1+1+2+1=5, sample=80%
+                self.set_data_timing(prop_seg, 2, 1, sjw, 1)
+            else:
+                return False
+            return True
+        else:
+            # Unsupported clock frequency for data phase
+            return False
+
     def send(self, frame):
         r"""
         Send frame
         :param frame: GsUsbFrame
         """
-        # Frame size is different depending on HW timestamp feature support
+        # Frame size is different depending on HW timestamp and FD mode
         hw_timestamps = (
             self.device_flags & GS_CAN_MODE_HW_TIMESTAMP
         ) == GS_CAN_MODE_HW_TIMESTAMP
-        self.gs_usb.write(0x02, frame.pack(hw_timestamps))
+        self.gs_usb.write(0x02, frame.pack(hw_timestamps, self.fd_mode))
         return True
 
     def read(self, frame, timeout_ms):
@@ -220,16 +301,18 @@ class GsUsb:
                            Note that timeout as 0 will block forever if no message is received
         :return: return True if success else False
         """
-        # Frame size is different depending on HW timestamp feature support
+        # Frame size is different depending on HW timestamp and FD mode
         hw_timestamps = (
             self.device_flags & GS_CAN_MODE_HW_TIMESTAMP
         ) == GS_CAN_MODE_HW_TIMESTAMP
         try:
-            data = self.gs_usb.read(0x81, frame.__sizeof__(hw_timestamps), timeout_ms)
+            data = self.gs_usb.read(
+                0x81, frame.__sizeof__(hw_timestamps, self.fd_mode), timeout_ms
+            )
         except usb.core.USBError:
             return False
 
-        GsUsbFrame.unpack_into(frame, data, hw_timestamps)
+        GsUsbFrame.unpack_into(frame, data, hw_timestamps, self.fd_mode)
         return True
 
     @property
@@ -264,6 +347,30 @@ class GsUsb:
             data = self.gs_usb.ctrl_transfer(0xC1, _GS_USB_BREQ_BT_CONST, 0, 0, 40)
             self.capability = DeviceCapability.unpack(data)
         return self.capability
+
+    @property
+    def device_capability_extended(self):
+        r"""
+        Get gs_usb extended device capability (includes CAN FD timing constraints)
+        Returns None if device doesn't support BT_CONST_EXT
+        """
+        # Check if device supports extended capability
+        if not (self.device_capability.feature & GS_CAN_FEATURE_BT_CONST_EXT):
+            return None
+        # If we already have extended capability cached, return it
+        if self.capability is not None and self.capability.has_fd_timing:
+            return self.capability
+        # Fetch extended capability and replace the basic one
+        data = self.gs_usb.ctrl_transfer(0xC1, _GS_USB_BREQ_BT_CONST_EXT, 0, 0, 72)
+        self.capability = DeviceCapability.unpack_extended(data)
+        return self.capability
+
+    @property
+    def supports_fd(self):
+        r"""
+        Check if device supports CAN FD
+        """
+        return (self.device_capability.feature & GS_CAN_FEATURE_FD) != 0
 
     def __str__(self):
         try:

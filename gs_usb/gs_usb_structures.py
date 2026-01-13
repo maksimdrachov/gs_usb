@@ -1,4 +1,5 @@
 from struct import pack, unpack
+from typing import Optional
 
 
 class DeviceMode:
@@ -60,19 +61,36 @@ class DeviceInfo:
 
 
 class DeviceCapability:
+    """
+    Device capability including bit timing constraints.
+
+    Supports both classic CAN (BT_CONST) and CAN FD (BT_CONST_EXT) devices.
+    When created from BT_CONST_EXT data, the data phase timing fields are populated.
+    """
+
     def __init__(
         self,
-        feature,
-        clk,
-        tseg1_min,
-        tseg1_max,
-        tseg2_min,
-        tseg2_max,
-        sjw_max,
-        brp_min,
-        brp_max,
-        brp_inc,
+        feature: int,
+        clk: int,
+        tseg1_min: int,
+        tseg1_max: int,
+        tseg2_min: int,
+        tseg2_max: int,
+        sjw_max: int,
+        brp_min: int,
+        brp_max: int,
+        brp_inc: int,
+        # CAN FD data phase timing (optional)
+        dtseg1_min: Optional[int] = None,
+        dtseg1_max: Optional[int] = None,
+        dtseg2_min: Optional[int] = None,
+        dtseg2_max: Optional[int] = None,
+        dsjw_max: Optional[int] = None,
+        dbrp_min: Optional[int] = None,
+        dbrp_max: Optional[int] = None,
+        dbrp_inc: Optional[int] = None,
     ):
+        # Nominal (arbitration) phase timing
         self.feature = feature
         self.fclk_can = clk
         self.tseg1_min = tseg1_min
@@ -83,9 +101,23 @@ class DeviceCapability:
         self.brp_min = brp_min
         self.brp_max = brp_max
         self.brp_inc = brp_inc
+        # Data phase timing (CAN FD) - None if not available
+        self.dtseg1_min = dtseg1_min
+        self.dtseg1_max = dtseg1_max
+        self.dtseg2_min = dtseg2_min
+        self.dtseg2_max = dtseg2_max
+        self.dsjw_max = dsjw_max
+        self.dbrp_min = dbrp_min
+        self.dbrp_max = dbrp_max
+        self.dbrp_inc = dbrp_inc
+
+    @property
+    def has_fd_timing(self) -> bool:
+        """Check if CAN FD data phase timing is available."""
+        return self.dtseg1_min is not None
 
     def __str__(self):
-        return (
+        result = (
             "Feature bitfield: 0x%08x\r\n"
             "Clock: %u\r\n"
             "TSEG1: %u - %u\r\n"
@@ -104,8 +136,37 @@ class DeviceCapability:
                 self.brp_max,
             )
         )
+        if self.has_fd_timing:
+            result += (
+                "Data Phase (CAN FD):\r\n"
+                "  DTSEG1: %u - %u\r\n"
+                "  DTSEG2: %u - %u\r\n"
+                "  DSJW (max): %u\r\n"
+                "  DBRP: %u - %u\r\n"
+                % (
+                    self.dtseg1_min,
+                    self.dtseg1_max,
+                    self.dtseg2_min,
+                    self.dtseg2_max,
+                    self.dsjw_max,
+                    self.dbrp_min,
+                    self.dbrp_max,
+                )
+            )
+        return result
 
     @staticmethod
-    def unpack(data: bytes):
+    def unpack(data: bytes) -> "DeviceCapability":
+        """Unpack from BT_CONST response (40 bytes, 10 x uint32)."""
         unpacked_data = unpack("<10I", data)
         return DeviceCapability(*unpacked_data)
+
+    @staticmethod
+    def unpack_extended(data: bytes) -> "DeviceCapability":
+        """Unpack from BT_CONST_EXT response (72 bytes, 18 x uint32)."""
+        unpacked_data = unpack("<18I", data)
+        return DeviceCapability(*unpacked_data)
+
+
+# Alias for backward compatibility
+DeviceCapabilityExtended = DeviceCapability
