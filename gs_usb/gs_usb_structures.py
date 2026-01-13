@@ -47,10 +47,10 @@ class DeviceInfo:
         self.hw_version = hw_version
 
     def __str__(self):
-        return "iCount: %u\r\nFW Version: %u\r\nHW Version: %u\r\n" % (
+        return "iCount: %u\r\nFW Version: %.1f\r\nHW Version: %.1f\r\n" % (
             self.icount,
-            str(self.fw_version / 10.0),
-            str(self.hw_version / 10.0),
+            self.fw_version / 10.0,
+            self.hw_version / 10.0,
         )
 
     @staticmethod
